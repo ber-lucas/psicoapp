@@ -2,9 +2,16 @@
 
 import { revalidatePath } from "next/cache";
 import type { EmotionLog, User } from "@prisma/client";
+import {
+  startOfMonth,
+  startOfWeek,
+  subDays,
+  startOfDay,
+} from "date-fns";
+
 import { prisma } from "@/lib/prisma";
 import { requireRole, requireUser } from "@/lib/auth";
-import { isEmotion } from "@/lib/emotions";
+import { isEmotion, type Emotion } from "@/lib/emotions";
 
 /**
  * Tipo público de paciente devolvido ao psicólogo, com o último registro
@@ -168,3 +175,201 @@ export async function getGlobalEmotionFeed(): Promise<EmotionLogWithUser[]> {
     include: { user: true },
   });
 }
+
+/**
+ * Variante sem cap do feed agregado, usada na aba "Histórico" do psicólogo
+ * onde o usuário deve poder navegar por todos os registros já feitos por
+ * seus pacientes vinculados.
+ *
+ * Mantida separada de `getGlobalEmotionFeed` para deixar explícito o contrato
+ * (a versão "Feed" da home é deliberadamente limitada para não sobrecarregar
+ * o dashboard).
+ *
+ * @returns Todos os logs dos pacientes vinculados, ordenados por `createdAt desc`.
+ * @throws Redireciona para '/login' se não autenticado.
+ * @throws Redireciona ao dashboard de paciente se a role não for `PSYCHOLOGIST`.
+ */
+export async function getGlobalEmotionFeedFull(): Promise<EmotionLogWithUser[]> {
+  const { dbUser } = await requireRole("PSYCHOLOGIST");
+
+  return prisma.emotionLog.findMany({
+    where: { user: { psychologistId: dbUser.id } },
+    orderBy: { createdAt: "desc" },
+    include: { user: true },
+  });
+}
+
+/**
+ * Lista compacta dos registros mais recentes feitos por pacientes
+ * vinculados ao psicólogo — alimenta a coluna "Atividade Recente"
+ * do dashboard.
+ *
+ * @param limit - Número máximo de itens a retornar (default 8).
+ * @returns Logs ordenados por `createdAt desc` com paciente embutido.
+ * @throws Redireciona para '/login' se não autenticado.
+ * @throws Redireciona ao dashboard de paciente se a role não for `PSYCHOLOGIST`.
+ */
+export async function getPsychologistRecentLogs(
+  limit = 8,
+): Promise<EmotionLogWithUser[]> {
+  const { dbUser } = await requireRole("PSYCHOLOGIST");
+
+  return prisma.emotionLog.findMany({
+    where: { user: { psychologistId: dbUser.id } },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+    include: { user: true },
+  });
+}
+
+/**
+ * Métricas agregadas do dashboard do psicólogo.
+ *
+ * Concentra os números exibidos nos `MetricCard`s — nº de pacientes
+ * vinculados, contagens de registros na semana e no mês corrente,
+ * e a emoção mais frequente entre os pacientes (visão "humor coletivo").
+ *
+ * Cálculos rodam no banco para `count` e em memória para `mostFrequent`
+ * porque o volume esperado é baixo e simplifica o código.
+ *
+ * @returns Estrutura com `totalPatients`, `logsThisWeek`, `logsThisMonth`
+ *   e `mostFrequentEmotion` (ou `null` se não houver registros).
+ * @throws Redireciona para '/login' se não autenticado.
+ * @throws Redireciona ao dashboard de paciente se a role não for `PSYCHOLOGIST`.
+ */
+export async function getPsychologistDashboardStats(): Promise<{
+  totalPatients: number;
+  logsThisWeek: number;
+  logsThisMonth: number;
+  mostFrequentEmotion: Emotion | null;
+}> {
+  const { dbUser } = await requireRole("PSYCHOLOGIST");
+
+  const now = new Date();
+  const weekStart = startOfWeek(now, { weekStartsOn: 1 });
+  const monthStart = startOfMonth(now);
+  const baseWhere = { user: { psychologistId: dbUser.id } } as const;
+
+  const [totalPatients, logsThisWeek, logsThisMonth, allEmotions] =
+    await Promise.all([
+      prisma.user.count({
+        where: { psychologistId: dbUser.id, role: "PATIENT" },
+      }),
+      prisma.emotionLog.count({
+        where: { ...baseWhere, createdAt: { gte: weekStart } },
+      }),
+      prisma.emotionLog.count({
+        where: { ...baseWhere, createdAt: { gte: monthStart } },
+      }),
+      prisma.emotionLog.findMany({
+        where: baseWhere,
+        select: { emotion: true },
+      }),
+    ]);
+
+  return {
+    totalPatients,
+    logsThisWeek,
+    logsThisMonth,
+    mostFrequentEmotion: pickMostFrequent(allEmotions.map((l) => l.emotion)),
+  };
+}
+
+/**
+ * Métricas agregadas do dashboard do paciente.
+ *
+ * Inclui contagem total de registros, sequência atual de dias consecutivos
+ * (streak), emoção mais frequente do próprio paciente e o último log para
+ * destacar no card lateral. A streak considera tolerância para "ainda não
+ * postou hoje" — se o último log foi ontem, a sequência continua válida.
+ *
+ * @returns Estatísticas pessoais do paciente.
+ * @throws Redireciona para '/login' se não autenticado.
+ * @throws Redireciona ao dashboard do psicólogo se a role for `PSYCHOLOGIST`.
+ */
+export async function getPatientDashboardStats(): Promise<{
+  totalLogs: number;
+  currentStreak: number;
+  mostFrequentEmotion: Emotion | null;
+  lastLog: EmotionLog | null;
+}> {
+  const { dbUser } = await requireRole("PATIENT");
+
+  const logs = await prisma.emotionLog.findMany({
+    where: { userId: dbUser.id },
+    orderBy: { createdAt: "desc" },
+  });
+
+  return {
+    totalLogs: logs.length,
+    currentStreak: calculateStreak(logs.map((l) => l.createdAt)),
+    mostFrequentEmotion: pickMostFrequent(logs.map((l) => l.emotion)),
+    lastLog: logs[0] ?? null,
+  };
+}
+
+/**
+ * Conta ocorrências em uma lista de strings e devolve a mais frequente
+ * que ainda corresponde a uma {@link Emotion} válida.
+ *
+ * Tolera valores antigos que possam ter saído da lista canônica
+ * (ex: emoção descontinuada) — esses entram no `unknown` e nunca são
+ * retornados como "mais frequente", evitando renderizar badges
+ * inconsistentes na UI.
+ */
+function pickMostFrequent(emotions: string[]): Emotion | null {
+  if (emotions.length === 0) return null;
+
+  const counts = new Map<string, number>();
+  for (const e of emotions) {
+    counts.set(e, (counts.get(e) ?? 0) + 1);
+  }
+
+  let bestKey: string | null = null;
+  let bestCount = -1;
+  for (const [key, count] of counts) {
+    if (count > bestCount) {
+      bestKey = key;
+      bestCount = count;
+    }
+  }
+
+  return bestKey && isEmotion(bestKey) ? bestKey : null;
+}
+
+/**
+ * Calcula a sequência (streak) de dias consecutivos com pelo menos um
+ * registro a partir do último dia ativo, com tolerância de 1 dia.
+ *
+ * Regra: se o último log foi hoje OU ontem, contar a partir dele e voltar
+ * dia a dia até encontrar um "buraco". Se foi há mais de 1 dia, a streak é 0.
+ *
+ * @param dates - Datas dos logs do paciente (ordem irrelevante).
+ * @returns Quantidade de dias consecutivos.
+ */
+function calculateStreak(dates: Date[]): number {
+  if (dates.length === 0) return 0;
+
+  const dayKeys = new Set(
+    dates.map((d) => startOfDay(d).toISOString().slice(0, 10)),
+  );
+
+  const today = startOfDay(new Date());
+  const yesterday = startOfDay(subDays(today, 1));
+  let cursor: Date | null = null;
+
+  if (dayKeys.has(today.toISOString().slice(0, 10))) {
+    cursor = today;
+  } else if (dayKeys.has(yesterday.toISOString().slice(0, 10))) {
+    cursor = yesterday;
+  }
+
+  let streak = 0;
+  while (cursor && dayKeys.has(cursor.toISOString().slice(0, 10))) {
+    streak++;
+    cursor = subDays(cursor, 1);
+  }
+
+  return streak;
+}
+

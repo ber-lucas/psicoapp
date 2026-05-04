@@ -37,6 +37,6 @@ export const EMOTION_COLORS: Record<Emotion, string> = {
   Ansiedade: "bg-yellow-100 text-yellow-800 border-yellow-200",
   Alegria: "bg-green-100 text-green-800 border-green-200",
   Tristeza: "bg-blue-100 text-blue-800 border-blue-200",
-  Raiva: "bg-red-100 text-red-800 border-red-200",
-  Paz: "bg-violet-100 text-violet-800 border-violet-200",
+  Raiva: "bg-rose-100 text-rose-800 border-rose-200",
+  Paz: "bg-cyan-100 text-cyan-800 border-cyan-200",
 };
