@@ -13,7 +13,6 @@ export const prisma =
   globalForPrisma.prisma ||
   new PrismaClient({
     log: ["query"],
-    // @ts-ignore: ignora erro de tipagem no prisma v7
     datasourceUrl: process.env.DATABASE_URL,
   });
 
