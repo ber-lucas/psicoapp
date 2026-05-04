@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(ls \"C:\\\\Users\\\\berna\\\\www\\\\psicoapp\\\\node_modules\\\\react-day-picker\")",
-      "Bash(ls \"C:\\\\Users\\\\berna\\\\www\\\\psicoapp\\\\node_modules\\\\@base-ui\\\\react\\\\select\")",
-      "Bash(ls \"C:\\\\Users\\\\berna\\\\www\\\\psicoapp\\\\node_modules\\\\@base-ui\\\\react\\\\popover\")"
-    ]
-  }
-}
