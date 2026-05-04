@@ -7,45 +7,43 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import {
-  Table,
-  TableBody,
-  TableCaption,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { LogOut, Users, Key } from "lucide-react";
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
+import { LogOut, Users, Key, CalendarDays, ListOrdered } from "lucide-react";
 import { logout } from "@/app/(auth)/login/actions";
-import { createClient } from "@/utils/supabase/server";
-import { prisma } from "@/lib/prisma";
-import { redirect } from "next/navigation";
+import { requireRole } from "@/lib/auth";
+import {
+  getGlobalEmotionFeed,
+  getPsychologistPatients,
+} from "@/lib/actions/emotion";
+import { EmotionFeed } from "@/components/emotion/EmotionFeed";
+import { EmotionCalendar } from "@/components/emotion/EmotionCalendar";
+import { PatientList } from "@/components/emotion/PatientList";
 
 export const dynamic = "force-dynamic";
 
 /**
  * Renderiza o dashboard principal do Psicólogo.
- * Exibe o código de convite único do profissional e a lista de pacientes vinculados.
- * 
- * @returns Componente React (Server Component) com o painel do psicólogo.
- * @throws Redireciona para '/login' se o usuário não possuir sessão ativa.
- * @throws Redireciona para '/patient/dashboard' caso o usuário tenha perfil de Paciente.
+ *
+ * Concentra três visões complementares dos pacientes vinculados em abas:
+ * (1) feed cronológico para escanear o "humor" recente, (2) calendário global
+ * mostrando dias com atividade e detalhes por dia, e (3) lista navegável
+ * para abrir o histórico individual de cada paciente.
+ *
+ * @returns Server Component com o painel do psicólogo.
+ * @throws Redireciona para '/login' se não houver sessão Supabase ativa.
+ * @throws Redireciona para '/patient/dashboard' caso a role autenticada seja `PATIENT`.
  */
 export default async function PsychologistDashboard() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { dbUser } = await requireRole("PSYCHOLOGIST");
 
-  if (!user) redirect("/login");
-
-  // Busca a role do usuário no banco
-  const dbUser = await prisma.user.findUnique({
-    where: { id: user.id },
-  });
-
-  if (dbUser?.role !== "PSYCHOLOGIST") {
-    // Se não for psicólogo, manda pro dashboard de paciente
-    redirect("/patient/dashboard");
-  }
+  const [patients, feed] = await Promise.all([
+    getPsychologistPatients(),
+    getGlobalEmotionFeed(),
+  ]);
 
   return (
     <div className="min-h-screen bg-gray-50 p-6">
@@ -55,7 +53,9 @@ export default async function PsychologistDashboard() {
             <h1 className="text-3xl font-bold tracking-tight text-gray-900">
               Painel do Psicólogo
             </h1>
-            <p className="text-gray-500">Visão geral dos pacientes de Dr(a). {dbUser?.name}</p>
+            <p className="text-gray-500">
+              Visão geral dos pacientes de Dr(a). {dbUser.name}
+            </p>
           </div>
           <form action={logout}>
             <Button variant="outline" type="submit">
@@ -83,61 +83,66 @@ export default async function PsychologistDashboard() {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center">
-                <Users className="mr-2 h-5 w-5 text-gray-600" />
-                Meus Pacientes
-              </CardTitle>
-              <CardDescription>
-                Lista de pacientes e seus últimos registros de emoções.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="rounded-md border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Nome do Paciente</TableHead>
-                      <TableHead>Última Emoção</TableHead>
-                      <TableHead>Data do Registro</TableHead>
-                      <TableHead className="text-right">Ação</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    <TableRow>
-                      <TableCell className="font-medium">João Silva</TableCell>
-                      <TableCell>
-                        <span className="inline-flex items-center rounded-full bg-yellow-100 px-2.5 py-0.5 text-xs font-medium text-yellow-800">
-                          Ansioso
-                        </span>
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">Hoje, 10:30</TableCell>
-                      <TableCell className="text-right">
-                        <Button variant="ghost" size="sm">
-                          Ver Detalhes
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                    <TableRow>
-                      <TableCell className="font-medium">Maria Souza</TableCell>
-                      <TableCell>
-                        <span className="inline-flex items-center rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-800">
-                          Feliz
-                        </span>
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">Ontem, 18:45</TableCell>
-                      <TableCell className="text-right">
-                        <Button variant="ghost" size="sm">
-                          Ver Detalhes
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          </Card>
+          <Tabs defaultValue="feed" className="w-full">
+            <TabsList>
+              <TabsTrigger value="feed">
+                <ListOrdered className="mr-2 h-4 w-4" />
+                Feed Geral
+              </TabsTrigger>
+              <TabsTrigger value="calendar">
+                <CalendarDays className="mr-2 h-4 w-4" />
+                Calendário Global
+              </TabsTrigger>
+              <TabsTrigger value="patients">
+                <Users className="mr-2 h-4 w-4" />
+                Pacientes
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="feed" className="mt-4">
+              <EmotionFeed logs={feed} />
+            </TabsContent>
+
+            <TabsContent value="calendar" className="mt-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center">
+                    <CalendarDays className="mr-2 h-5 w-5 text-gray-600" />
+                    Calendário Global
+                  </CardTitle>
+                  <CardDescription>
+                    Dias destacados possuem registros — clique para ver quais pacientes postaram.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {feed.length === 0 ? (
+                    <div className="text-center text-sm text-muted-foreground py-10">
+                      Nenhum registro até o momento.
+                    </div>
+                  ) : (
+                    <EmotionCalendar logs={feed} />
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="patients" className="mt-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center">
+                    <Users className="mr-2 h-5 w-5 text-gray-600" />
+                    Meus Pacientes
+                  </CardTitle>
+                  <CardDescription>
+                    Lista de pacientes vinculados e seus últimos registros.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <PatientList patients={patients} />
+                </CardContent>
+              </Card>
+            </TabsContent>
+          </Tabs>
         </main>
       </div>
     </div>
